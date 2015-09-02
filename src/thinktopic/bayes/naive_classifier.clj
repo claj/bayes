@@ -63,17 +63,20 @@
 ; class = argmax p(class_j) \pi_{i \in positions} p(x_i | c_j)
 (def TRAIN-TEST-SPLIT 0.67)
 
-(defn load-data
+(defn diabetes-data
   []
   (with-open [in-file (io/reader "resources/pima-indians-diabetes.csv")]
-    (into [] (csv/read-csv in-file))))
+    (let [lines (csv/read-csv in-file)
+          num-lines (map #(into [] (map read-string %)) lines)]
+      (into [] num-lines))))
 
-(def data (memoize load-data))
-
-(def split-dataset
+(defn split-dataset
   "Split the data into [train, test] sets with train having ratio % of the data."
   [data ratio]
-  (split-at (shuffle data) (int (* (count data) ratio))))
+  (split-at (int (* (count data) ratio))
+            data
+            ;(shuffle data)
+            ))
 
 (defn mean
   [vs]
@@ -92,14 +95,71 @@
   (Math/sqrt (variance vs)))
 
 (defn summarize
+  "Computes the mean and stdev for each term in a dataset.
+  (e.g. avg of first param, then second, etc.)"
   [data]
   (apply map (fn [& terms] [(mean terms) (stdev terms)]) data))
 
+(defn diabetes-class-data
+  "Split into classes and remove the last field which is the binary class value."
+  [data]
+  (reduce (fn [mem sample]
+            (let [k (last sample)
+                  sample (drop-last sample)
+                  cur (get mem k [])]
+            (assoc mem k (conj cur sample))))
+          {}
+          data))
+
+(defn probability-of
+  "Compute the probability of X given the Gaussian distribution described by mean and stdev."
+  [x mean stdev]
+  (let [exp (Math/exp (- (/ (Math/pow (- x mean) 2)
+                            (* 2 (Math/pow stdev 2)))))]
+    (* exp (/ 1
+              (* (Math/sqrt (* 2 Math/PI))
+                 stdev)))))
+
+(defn class-probability
+  "Calculate the probability of one class given its summary stats and an input sample."
+  [summary sample]
+  (reduce * (map (fn [[mean stdev] x]
+                   (probability-of x mean stdev))
+                 summary sample)))
+
+(defn class-probabilities
+  "Calculate the probability for each class given the training summaries and an input sample."
+  [summaries sample]
+  (reduce-kv (fn [mem clazz summary]
+               (assoc mem clazz (class-probability summary sample)))
+             {}
+             summaries))
+
+(defn predict
+  "Predict the class based on summary of training data and an input."
+  [summaries sample]
+  (let [probs (class-probabilities summaries sample)]
+    (first (last (sort-by second probs)))))
+
+(defn predict-all
+  [summaries samples]
+  (map (partial predict summaries) samples))
+
+(defn prediction-accuracy
+  [test-data predictions]
+  (* (/ (count (filter #(= true %) (map #(= (last %1) %2) test-data predictions)))
+        (count test-data))
+     100.0))
+
 (defn train-classifier
   [data]
-  (let [[train-data test-data] (split-dataset data TRAIN-TEST-SPLIT)
-        by-class (group-by train-data last)]
-    ))
+  (let [[data test-data] (split-dataset data TRAIN-TEST-SPLIT)
+        by-class (diabetes-class-data data)
+        summaries (reduce-kv (fn [mem clazz samples]
+                               (assoc mem clazz (summarize samples)))
+                             {} by-class)
+        predictions (predict-all summaries (map drop-last test-data))]
+    (prediction-accuracy test-data predictions)))
 
 
 
