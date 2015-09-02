@@ -96,7 +96,6 @@
           (recur (inc i) data pred-state pred-cov next-state)
           data)))))
 
-
 (defn plot-filtered-projectile
   [d]
   (let [;[reals noisy predictions] (unravel 3 d)

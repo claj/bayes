@@ -1,10 +1,98 @@
 (ns thinktopic.bayes.naive-classifier
   (:require
-    [clojure.core.matrix :as mat]
-    [clojure.data.csv :as csv]
-    [clojure.java.io :as io]))
+    [clojure.string :as string]
+    [clojure.core.matrix :as mat]))
 
-; A naive Bayes classifier takes multivariate categorical input and
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Gaussian classifier for samples with one or more continuous values
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn mean
+  "Returns the average value of a sequence."
+  [vs]
+  (double (/ (apply + vs)
+             (count vs))))
+
+(defn variance
+  "Returns the expected value of the squared difference from the mean."
+  [vs]
+  (let [avg (mean vs)]
+    (/ (apply + (map #(Math/pow (- % avg) 2) vs))
+       (dec (count vs)))))
+
+(defn stdev
+  "Returns the standard deviation of the samples."
+  [vs]
+  (Math/sqrt (variance vs)))
+
+(defn summarize
+  "Computes the mean and stdev for each term in a dataset.
+  (e.g. avg of first param, then second, etc.)"
+  [data]
+  (apply map (fn [& terms] [(mean terms) (stdev terms)]) data))
+
+(defn probability-of
+  "Compute the probability of X given the Gaussian distribution described by mean and stdev."
+  [x mean stdev]
+  (let [exp (Math/exp (- (/ (Math/pow (- x mean) 2)
+                            (* 2 (Math/pow stdev 2)))))]
+    (* exp (/ 1
+              (* (Math/sqrt (* 2 Math/PI))
+                 stdev)))))
+
+(defn class-probability
+  "Calculate the probability of one class given its summary stats and an input sample."
+  [summary sample]
+  (reduce + (map (fn [[mean stdev] x]
+                   (Math/log (probability-of x mean stdev)))
+                 summary sample)))
+
+(defn class-probabilities
+  "Calculate the probability for each class given the training summaries and an input sample."
+  [summaries sample]
+  (reduce-kv (fn [mem clazz summary]
+               (assoc mem clazz (class-probability summary sample)))
+             {}
+             summaries))
+
+(defn normalized-class-probabilities
+  "Normalize class probabilities so they sum to one."
+  [class-probs]
+  (let [total (reduce + (vals class-probs))]
+    (zipmap (keys class-probs)
+            (map #(/ % total) (vals class-probs)))))
+
+(defn predict
+  "Predict the class based on summary of training data and an input."
+  [summaries sample]
+  (let [probs (class-probabilities summaries sample)]
+    (first (last (sort-by second probs)))))
+
+(defn predict-all
+  "Predict classes for a sequence of samples."
+  [summaries samples]
+  (map (partial predict summaries) samples))
+
+(defn prediction-accuracy
+  "Given labeled test data and predictions return the percent correct."
+  [test-data predictions]
+  (* (/ (count (filter #(= true %) (map #(= (last %1) %2) test-data predictions)))
+        (count test-data))
+     100.0))
+
+(defn gaussian-naive-classifier
+  "Takes a map of {<class-label> [<class samples>] ...} and returns a summary table
+  of statistics that can be used to predict the class of new samples."
+  [data-by-class]
+  (reduce-kv (fn [mem clazz samples]
+               (assoc mem clazz (summarize samples)))
+             {} data-by-class))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Multinomial classifier for text
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; A multinomial naive Bayes classifier takes multivariate categorical input and
 ; classifies it to be one of a set of possible classes.  It is called "naive"
 ; because it is a model that assumes that each component is independent.
 ; This conditional independence assumption is wrong, but lets us at least
@@ -20,10 +108,8 @@
 ; Since p(doc) is constant, we can just use
 ;   p(doc|class)*p(class) or likelihood * prior
 
-; p(class) is just globally, how often does a class occur?  The relative
-; frequency versus other classes.
-
-; p(class_j) = (docs in class_j) / (num docs)
+; p(class) is the relative frequency versus other classes:
+;    p(class_j) = (docs in class_j) / (num docs)
 
 ; What is p(doc | class)?  Given a bag of words representation, it's the
 ; probability of a set of term coefficients given a class.
@@ -61,105 +147,90 @@
 ; of zero to each class count.  (Gets 1 or alpha smoothed.)
 
 ; class = argmax p(class_j) \pi_{i \in positions} p(x_i | c_j)
-(def TRAIN-TEST-SPLIT 0.67)
 
-(defn diabetes-data
+(defn word-class-probabilities
+  "Takes a sequence of document tuples with [<sample> <class>] and returns the
+  global class probabilities.  p(class_j) = (docs-in class_j) / (count docs)"
+  [docs]
+  (let [{:keys [by-class n]} (reduce (fn [{:keys [by-class n]} [sample clazz]]
+                                       {:by-class (assoc by-class clazz (inc (get by-class clazz 0)))
+                                        :n (inc n)})
+                                     {:by-class {}
+                                      :n 0}
+                                     docs)]
+    (reduce-kv (fn [mem clazz clazz-count]
+                 (assoc mem clazz (/ clazz-count n)))
+               {}
+               by-class)))
+
+(defn sanitize-str
+  [s]
+  (-> (or s "")
+      (string/replace #"\." "")
+      (string/replace #"\," "")
+      (string/lower-case)))
+
+(defn whitespace?
+  [c]
+  (or (= \space c) (= \tab c) (= \newline c)))
+
+(defn tokenize-str
+  [s]
+  (map #(apply str %) (take-nth 2 (partition-by whitespace? (sanitize-str s)))))
+
+(defn word-probabilities
+  [tokens]
+  (let [n (count tokens)
+        freqs (frequencies tokens)
+        vocab-size (count (keys freqs))
+        smoothing 1]
+    (reduce-kv (fn [mem word word-count]
+                 (assoc mem word (/ (+ word-count smoothing)
+                                    (+ n (* smoothing vocab-size)))))
+               {}
+               freqs)))
+
+(defn word-class-stats
+  "Returns the word probabilities p(word_i | c_j) for each class:
+  {<class_j> {<word> <p(w_i | class_j)> ...}"
+  [docs]
+  (let [by-class (group-by second docs)]
+    (reduce-kv (fn [mem clazz docs]
+                 (assoc mem clazz
+                        (word-probabilities (apply concat
+                                                   (map #(tokenize-str (first %)) docs)))))
+               {} by-class)))
+
+(defn sample-class-probabilities
+  [{:keys [class-probs word-probs]} sample]
+  (let [tokens (set (tokenize-str sample))]
+    (reduce-kv (fn [mem clazz prob]
+                 (let [wp (get word-probs clazz)]
+                   (assoc mem clazz
+                          (double (apply * prob
+                                         (map #(get wp % 1) tokens))))))
+               {} class-probs)))
+
+(defn train-word-model
+  [docs]
+  (let [class-probs (word-class-probabilities docs)
+        word-probs (word-class-stats docs)]
+    {:class-probs class-probs
+     :word-probs word-probs}))
+
+(defn load-test-docs
   []
-  (with-open [in-file (io/reader "resources/pima-indians-diabetes.csv")]
-    (let [lines (csv/read-csv in-file)
-          num-lines (map #(into [] (map read-string %)) lines)]
-      (into [] num-lines))))
+  [["this is a test" :a]
+   ["another test it is" :a]
+   ["how about me" :b]
+   ["is it about you" :b]
+   ["or about me" :b]
+   ["what about you" :b]])
 
-(defn split-dataset
-  "Split the data into [train, test] sets with train having ratio % of the data."
-  [data ratio]
-  (split-at (int (* (count data) ratio))
-            data
-            ;(shuffle data)
-            ))
-
-(defn mean
-  [vs]
-  (double
-    (/ (apply + vs)
-       (count vs))))
-
-(defn variance
-  [vs]
-  (let [avg (mean vs)]
-    (/ (apply + (map #(Math/pow (- % avg) 2) vs))
-       (dec (count vs)))))
-
-(defn stdev
-  [vs]
-  (Math/sqrt (variance vs)))
-
-(defn summarize
-  "Computes the mean and stdev for each term in a dataset.
-  (e.g. avg of first param, then second, etc.)"
-  [data]
-  (apply map (fn [& terms] [(mean terms) (stdev terms)]) data))
-
-(defn diabetes-class-data
-  "Split into classes and remove the last field which is the binary class value."
-  [data]
-  (reduce (fn [mem sample]
-            (let [k (last sample)
-                  sample (drop-last sample)
-                  cur (get mem k [])]
-            (assoc mem k (conj cur sample))))
-          {}
-          data))
-
-(defn probability-of
-  "Compute the probability of X given the Gaussian distribution described by mean and stdev."
-  [x mean stdev]
-  (let [exp (Math/exp (- (/ (Math/pow (- x mean) 2)
-                            (* 2 (Math/pow stdev 2)))))]
-    (* exp (/ 1
-              (* (Math/sqrt (* 2 Math/PI))
-                 stdev)))))
-
-(defn class-probability
-  "Calculate the probability of one class given its summary stats and an input sample."
-  [summary sample]
-  (reduce * (map (fn [[mean stdev] x]
-                   (probability-of x mean stdev))
-                 summary sample)))
-
-(defn class-probabilities
-  "Calculate the probability for each class given the training summaries and an input sample."
-  [summaries sample]
-  (reduce-kv (fn [mem clazz summary]
-               (assoc mem clazz (class-probability summary sample)))
-             {}
-             summaries))
-
-(defn predict
-  "Predict the class based on summary of training data and an input."
-  [summaries sample]
-  (let [probs (class-probabilities summaries sample)]
-    (first (last (sort-by second probs)))))
-
-(defn predict-all
-  [summaries samples]
-  (map (partial predict summaries) samples))
-
-(defn prediction-accuracy
-  [test-data predictions]
-  (* (/ (count (filter #(= true %) (map #(= (last %1) %2) test-data predictions)))
-        (count test-data))
-     100.0))
-
-(defn train-classifier
-  [data]
-  (let [[data test-data] (split-dataset data TRAIN-TEST-SPLIT)
-        by-class (diabetes-class-data data)
-        summaries (reduce-kv (fn [mem clazz samples]
-                               (assoc mem clazz (summarize samples)))
-                             {} by-class)
-        predictions (predict-all summaries (map drop-last test-data))]
-    (prediction-accuracy test-data predictions)))
-
-
+(defn test-word-model
+  []
+  (let [docs (load-test-docs)
+        model (train-word-model (drop-last docs))]
+    ;(println model)
+    (sample-class-probabilities model (last docs))))
 
