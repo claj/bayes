@@ -1,7 +1,8 @@
 (ns thinktopic.bayes.naive-classifier
   (:require
     [clojure.string :as string]
-    [clojure.core.matrix :as mat]))
+    [clojure.core.matrix :as mat]
+    [thinktopic.bayes.stopwords :refer [STOP-WORDS]]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Gaussian classifier for samples with one or more continuous values
@@ -147,6 +148,25 @@
 ; of zero to each class count.  (Gets 1 or alpha smoothed.)
 
 ; class = argmax p(class_j) \pi_{i \in positions} p(x_i | c_j)
+(def PUNCTUATION-REGEX #"\.|\,|\?|\!|\-|\_|\:|\;\'\"\&")
+
+(defn sanitize-str
+  [s]
+  (-> (or s "")
+      (string/lower-case)
+      (string/replace PUNCTUATION-REGEX "")))
+
+(defn whitespace?
+  [c]
+  (or (= \space c) (= \tab c) (= \newline c)))
+
+(defn tokenize-str
+  [s]
+  (filter #(not (STOP-WORDS %))
+          (map #(apply str %)
+               (take-nth 2 (partition-by whitespace? (sanitize-str s))))))
+
+(def SMOOTHING-FACTOR 0.7)
 
 (defn word-class-probabilities
   "Takes a sequence of document tuples with [<sample> <class>] and returns the
@@ -159,34 +179,19 @@
                                       :n 0}
                                      docs)]
     (reduce-kv (fn [mem clazz clazz-count]
-                 (assoc mem clazz (/ clazz-count n)))
+                 (assoc mem clazz (double (/ clazz-count n))))
                {}
                by-class)))
 
-(defn sanitize-str
-  [s]
-  (-> (or s "")
-      (string/replace #"\." "")
-      (string/replace #"\," "")
-      (string/lower-case)))
-
-(defn whitespace?
-  [c]
-  (or (= \space c) (= \tab c) (= \newline c)))
-
-(defn tokenize-str
-  [s]
-  (map #(apply str %) (take-nth 2 (partition-by whitespace? (sanitize-str s)))))
-
 (defn word-probabilities
+  "Compute p(word_i | class_j).  "
   [tokens]
   (let [n (count tokens)
         freqs (frequencies tokens)
-        vocab-size (count (keys freqs))
-        smoothing 1]
+        vocab-size (count (keys freqs))]
     (reduce-kv (fn [mem word word-count]
-                 (assoc mem word (/ (+ word-count smoothing)
-                                    (+ n (* smoothing vocab-size)))))
+                 (assoc mem word (double (/ (+ word-count SMOOTHING-FACTOR)
+                                            (+ n (* SMOOTHING-FACTOR vocab-size))))))
                {}
                freqs)))
 
@@ -197,13 +202,12 @@
   (let [by-class (group-by second docs)]
     (reduce-kv (fn [mem clazz docs]
                  (assoc mem clazz
-                        (word-probabilities (apply concat
-                                                   (map #(tokenize-str (first %)) docs)))))
+                        (word-probabilities (apply concat (map first docs)))))
                {} by-class)))
 
 (defn sample-class-probabilities
-  [{:keys [class-probs word-probs]} sample]
-  (let [tokens (set (tokenize-str sample))]
+  [{:keys [class-probs word-probs] :as model} sample]
+  (let [tokens (set sample)]
     (reduce-kv (fn [mem clazz prob]
                  (let [wp (get word-probs clazz)]
                    (assoc mem clazz
@@ -218,19 +222,16 @@
     {:class-probs class-probs
      :word-probs word-probs}))
 
-(defn load-test-docs
-  []
-  [["this is a test" :a]
-   ["another test it is" :a]
-   ["how about me" :b]
-   ["is it about you" :b]
-   ["or about me" :b]
-   ["what about you" :b]])
+(defn predict-word-class
+  [model sample]
+  (first
+    (reduce-kv (fn [[best-clazz best-prob] clazz prob]
+                 (if (> prob best-prob)
+                   [clazz prob]
+                   [best-clazz best-prob]))
+               [nil 0.0]
+               (sample-class-probabilities model sample))))
 
-(defn test-word-model
-  []
-  (let [docs (load-test-docs)
-        model (train-word-model (drop-last docs))]
-    ;(println model)
-    (sample-class-probabilities model (last docs))))
+
+
 
