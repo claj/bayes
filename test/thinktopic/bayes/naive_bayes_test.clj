@@ -105,8 +105,8 @@
         model (train-word-model docs)
         predictions (map (partial predict-word-class model) (map first test-docs))
         accuracy (prediction-accuracy test-docs predictions)]
-    (doall
-      (map #(println %1 (first %2)) predictions orig-test-docs))
+    ;(doall
+    ;  (map #(println %1 (first %2)) predictions orig-test-docs))
     (println "accuracy: " accuracy)))
 
 (defn test-newsgroup-model
@@ -117,8 +117,6 @@
         model (train-word-model tokenized)
         predictions (map (partial predict-word-class model) (map first tokenized-test))
         accuracy (prediction-accuracy test-docs predictions)]
-    (doall
-      (map #(println %1 (first %2)) predictions orig-test-docs))
-    (println "accuracy: " accuracy)
-    ;(println model)
-    ))
+    ;(doall
+    ;  (map #(println %1 (first %2)) predictions test-docs))
+    (println "accuracy: " accuracy)))

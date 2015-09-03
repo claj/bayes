@@ -166,7 +166,7 @@
           (map #(apply str %)
                (take-nth 2 (partition-by whitespace? (sanitize-str s))))))
 
-(def SMOOTHING-FACTOR 0.7)
+(def SMOOTHING-FACTOR 1.0)
 
 (defn word-class-probabilities
   "Takes a sequence of document tuples with [<sample> <class>] and returns the
