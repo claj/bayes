@@ -80,17 +80,53 @@
   [update control observation proc-error meas-error]
   (let [update-trans (mat/transpose update)
         observation-trans (mat/transpose observation)]
-  (fn [state covariance control-input measurement]
-    (let [; Prediction
-          state-pred     (state-update update control state control-input)
-          cov-pred       (probability-estimate update update-trans covariance proc-error)
+    (fn [state covariance control-input measurement]
+      (let [                            ; Prediction
+            state-pred     (state-update update control state control-input)
+            cov-pred       (probability-estimate update update-trans covariance proc-error)
 
-          ; Observation
-          innovation     (measured-diff observation state-pred measurement)
-          innovation-cov (innovation-covariance observation observation-trans cov-pred meas-error)
+                                        ; Observation
+            innovation     (measured-diff observation state-pred measurement)
+            innovation-cov (innovation-covariance observation observation-trans cov-pred meas-error)
 
-          ; Update
-          gain           (kalman-gain cov-pred observation-trans innovation-cov)
-          next-state     (smoothed-state-update state-pred gain innovation)
-          next-probs     (update-covariance gain innovation-cov covariance)]
-      [next-state next-probs]))))
+                                        ; Update
+            gain           (kalman-gain cov-pred observation-trans innovation-cov)
+            next-state     (smoothed-state-update state-pred gain innovation)
+            next-probs     (update-covariance gain innovation-cov covariance)]
+        [next-state next-probs]))))
+
+(defn kalman-filter2
+  "*-fn are for getting matrices at runtime
+  update        : A
+  control       : B
+  observation   : H
+  proc-error    : Q
+  meas-error    : R
+  control-input : Un
+"
+  [update-fn control-fn observation-fn proc-error-fn meas-error-fn control-input-fn
+   raw->state-fn state->raw-fn]
+  (fn [state raw-state covariance raw-measurement]
+      (let [measurement (raw->state-fn raw-measurement)
+            update (update-fn raw-state covariance raw-measurement)
+            control (control-fn raw-state covariance raw-measurement)
+            observation (observation-fn raw-state covariance raw-measurement)
+            proc-error (proc-error-fn raw-state covariance raw-measurement)
+            meas-error (meas-error-fn raw-state covariance raw-measurement)
+            control-input (control-input-fn raw-state covariance raw-measurement)
+            
+            update-trans (mat/transpose update)
+            observation-trans (mat/transpose observation)
+            
+            state-pred     (state-update update control state control-input)
+            cov-pred       (probability-estimate update update-trans covariance proc-error)
+
+                                        ; Observation
+            innovation     (measured-diff observation state-pred measurement)
+            innovation-cov (innovation-covariance observation observation-trans cov-pred meas-error)
+
+                                        ; Update
+            gain           (kalman-gain cov-pred observation-trans innovation-cov)
+            next-state     (smoothed-state-update state-pred gain innovation)
+            next-probs     (update-covariance gain innovation-cov covariance)]
+        [next-state (state->raw-fn next-state raw-measurement) next-probs])))

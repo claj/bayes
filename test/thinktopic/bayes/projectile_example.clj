@@ -3,7 +3,7 @@
             [incanter.stats :as stats]
             [incanter.charts :as chart]
             [incanter.core :refer (view)]
-            [thinktopic.bayes.kalman :refer [kalman-filter]]))
+            [thinktopic.bayes.kalman :refer [kalman-filter kalman-filter2]]))
 
 ; An implementation of the projectile example described here:
 ; http://greg.czerniak.info/guides/kalman1/
@@ -94,6 +94,56 @@
             data (conj data [next-state measurement pred-state])]
         (if (< i iters)
           (recur (inc i) data pred-state pred-cov next-state)
+          data)))))
+
+(defn projectile-filter2
+  "Simulate a flying projectile, like a rock thrown out of a catapult, which is being
+  'sensed' by a person with a telescope who is quickly noting down the estimated state."
+  []
+  (let [dt 0.1                          ; seconds
+        iters 150
+        angle 45                        ; at which object is thrown
+        speed 100
+        init-height 50
+        sensor-noise 50
+        [start-state proj-fn] (simulated-projectile angle speed)
+        projectile (partial proj-fn dt)
+        sensor     (fn [s0]
+                     (let [[[x] [dx] [y] [dy]] (projectile s0)
+                           nx (stats/sample-normal 1 :mean x :sd sensor-noise)
+                           ny (stats/sample-normal 1 :mean y :sd sensor-noise)]
+                       [[nx] [dx] [ny] [dy]]))
+        init-state (mat/matrix [[0] [200] [init-height] [30]])
+        init-cov   (mat/identity-matrix 4)
+        update     (mat/matrix [[1 dt 0 0] [0 1 0 0] [0 0 1 dt] [0 0 0 1]])
+        control    (mat/matrix [[0 0 0 0] [0 0 0 0] [0 0 1 0] [0 0 0 1]])
+        control-input (mat/matrix [[0] [0] [(* 0.5 GRAVITY dt dt)] [(* GRAVITY dt)]])
+        observe    (mat/identity-matrix 4)
+        P-err      0.8
+        proc-error (mat/diagonal-matrix (take 4 (repeat P-err)))
+                                        ;proc-error (mat/zero-matrix 4 4)
+        Q-err      0.001
+        meas-error (mat/diagonal-matrix (take 4 (repeat Q-err)))
+        kalman     (kalman-filter2 (constantly update) (constantly control)
+                                   (constantly observe)
+                                   (constantly proc-error)
+                                   (constantly meas-error)
+                                   (constantly control-input)
+                                   identity
+                                   (fn [new raw] new))]
+    (loop [i          1
+           data       []
+           pred-state init-state
+           raw-pred-state init-state
+           pred-cov   init-cov
+           true-state start-state]
+      (let [next-state (projectile true-state)
+            measurement (sensor true-state)
+            [pred-state raw-pred-state pred-cov] (kalman pred-state raw-pred-state pred-cov
+                                                         measurement)
+            data (conj data [next-state measurement raw-pred-state])]
+        (if (< i iters)
+          (recur (inc i) data pred-state raw-pred-state pred-cov next-state)
           data)))))
 
 (defn plot-filtered-projectile
